@@ -1,6 +1,3 @@
-# This code is modified from https://github.com/wyharveychen/CloserLookFewShot
-# 根据论文 "BidirectionalFeatureReconstructionNetwork for FineGrainedFewShotImageClassiﬁcation" 实现
-
 import backbone
 import torch
 import torch.nn as nn
@@ -73,9 +70,8 @@ class ArcFaceLoss(nn.Module):
 
 
 # ===================== 2. Feature Self-Reconstruction Module (FSRM) =====================
-# 对应论文图4：特征自重构模块
 class FeatureSelfReconstructionModule(nn.Module):
-    """特征自重构模块 (FSRM) - 对应论文图4"""
+    """特征自重构模块 (FSRM) 
 
     def __init__(self, feat_dim, num_heads=8, dropout=0.1, use_position_embedding=True):
         """
@@ -111,7 +107,7 @@ class FeatureSelfReconstructionModule(nn.Module):
         self.ln1 = nn.LayerNorm(self.C)
         self.ln2 = nn.LayerNorm(self.C)
 
-        # MLP (对应论文公式3)
+        # MLP 
         self.mlp = nn.Sequential(
             nn.Linear(self.C, self.C * 4),
             nn.GELU(),
@@ -155,7 +151,7 @@ class FeatureSelfReconstructionModule(nn.Module):
         else:
             z = x_flat
 
-        # 计算自注意力 (对应论文公式1和2)
+        # 计算自注意力
         Q = self.split_heads(self.W_Q(z))  # [B, num_heads, r, head_dim]
         K = self.split_heads(self.W_K(z))  # [B, num_heads, r, head_dim]
         V = self.split_heads(self.W_V(z))  # [B, num_heads, r, head_dim]
@@ -169,7 +165,7 @@ class FeatureSelfReconstructionModule(nn.Module):
         attended = torch.matmul(attention_weights, V)  # [B, num_heads, r, head_dim]
         attended = attended.transpose(1, 2).contiguous().view(B, self.num_patches, self.C)  # [B, r, C]
 
-        # 残差连接 + LayerNorm (公式3)
+        # 残差连接 + LayerNorm 
         z_attended = z + attended
         z_norm = self.ln1(z_attended)
 
@@ -182,9 +178,8 @@ class FeatureSelfReconstructionModule(nn.Module):
 
 
 # ===================== 3. Feature Mutual Reconstruction Module (FMRM) =====================
-# 对应论文图5：特征互重构模块（双向）
 class FeatureMutualReconstructionModule(nn.Module):
-    """特征互重构模块 (FMRM) - 对应论文图5
+    """特征互重构模块 (FMRM) 
 
     实现双向重构:
     1. 支持集 -> 查询集重构: S_c -> Q_i (增加类间差异)
@@ -207,7 +202,7 @@ class FeatureMutualReconstructionModule(nn.Module):
         self.num_heads = num_heads
         self.head_dim = self.C // num_heads
 
-        # 共享的Q、K、V投影矩阵 (论文中使用同一组权重)
+        # 共享的Q、K、V投影矩阵
         self.W_Q = nn.Linear(self.C, self.C, bias=False)
         self.W_K = nn.Linear(self.C, self.C, bias=False)
         self.W_V = nn.Linear(self.C, self.C, bias=False)
@@ -231,14 +226,12 @@ class FeatureMutualReconstructionModule(nn.Module):
                     nn.init.constant_(m.bias, 0)
 
     def split_heads(self, x):
-        """将输入拆分为多头"""
         batch_size, seq_len, _ = x.shape
         x = x.view(batch_size, seq_len, self.num_heads, self.head_dim)
         return x.transpose(1, 2)  # [B, num_heads, seq_len, head_dim]
 
     def forward(self, support_features, query_features):
         """
-        输入:
             support_features: [n_way, k, r, C] - 支持集特征 (S_c)
             query_features: [n_total_query, r, C] - 查询集特征 (Q_i)
 
@@ -294,7 +287,7 @@ class FeatureMutualReconstructionModule(nn.Module):
         # 堆叠所有类: [n_way, n_total_query, r, C]
         reconstructed_query = torch.stack(reconstructed_query, dim=0)
 
-        # ========== (2) 查询集 -> 支持集重构 (对应论文公式5) ==========
+        # ========== (2) 查询集 -> 支持集重构 ==========
         # Ŝ_(i,c) = Attention(S_c^Q, Q_i^K, Q_i^V)
 
         reconstructed_support = []
@@ -328,7 +321,7 @@ class FeatureMutualReconstructionModule(nn.Module):
         # 堆叠所有类: [n_way, n_total_query, k, r, C]
         reconstructed_support = torch.stack(reconstructed_support, dim=0)
 
-        # ========== (3) 计算距离 (对应论文公式6和7) ==========
+        # ========== (3) 计算距离 ==========
         # d_Q_i→S_c = ||Q_i^V - Q̂_(c,i)||^2
         # 使用欧氏距离
         Q_V_expanded = Q_V.unsqueeze(0).expand(n_way, -1, -1, -1)  # [n_way, n_total_query, r, C]
@@ -351,7 +344,7 @@ class FeatureMutualReconstructionModule(nn.Module):
         distances_q2s = distances_q2s / feature_dim
         distances_s2q = distances_s2q / feature_dim
 
-        # ========== (4) 计算总距离 (对应论文公式8) ==========
+        # ========== (4) 计算总距离 ==========
         # d_i^c = τ(λ1 * d_Q_i→S_c + λ2 * d_S_c→Q_i)
         # 使用softmax确保λ1+λ2=1
         lambda_weights = F.softmax(torch.stack([self.lambda1, self.lambda2]), dim=0)
@@ -360,123 +353,8 @@ class FeatureMutualReconstructionModule(nn.Module):
         return reconstructed_query, reconstructed_support, distances_q2s, distances_s2q, total_distances
 
 
-# ===================== 4. Feature Reconstructor for Visualization =====================
-# 用于生成图6的可视化解码器
-class FeatureVisualizationDecoder(nn.Module):
-    """特征可视化解码器 - 用于生成图6的恢复图像
 
-    训练一个逆ResNet作为解码器，将特征值恢复为3×84×84的图像
-    """
-
-    def __init__(self, feat_dim, output_size=84):
-        """
-        Args:
-            feat_dim: [C, H, W] 特征维度
-            output_size: 输出图像尺寸（默认84x84）
-        """
-        super(FeatureVisualizationDecoder, self).__init__()
-
-        self.C = feat_dim[0]
-        self.H = feat_dim[1]
-        self.W = feat_dim[2]
-        self.output_size = output_size
-
-        # 简化的逆ResNet解码器
-        # 输入: 特征 [B, C, H, W] 或 [B, r, C]
-
-        # 特征重塑层
-        self.reshape_conv = nn.Sequential(
-            nn.Conv2d(self.C, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True)
-        )
-
-        # 上采样块1: HxW -> 14x14 (如果原始H,W较小)
-        self.upsample1 = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True)
-        )
-
-        # 上采样块2: 14x14 -> 28x28
-        self.upsample2 = nn.Sequential(
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True)
-        )
-
-        # 上采样块3: 28x28 -> 56x56
-        self.upsample3 = nn.Sequential(
-            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True)
-        )
-
-        # 上采样块4: 56x56 -> 84x84
-        self.upsample4 = nn.Sequential(
-            nn.ConvTranspose2d(32, 16, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True)
-        )
-
-        # 输出层
-        self.output_conv = nn.Conv2d(16, 3, kernel_size=3, padding=1)
-
-        # 如果需要裁剪到84x84
-        self.crop = nn.AdaptiveAvgPool2d((output_size, output_size))
-
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
-    def forward(self, x):
-        """
-        输入:
-            x - 可以是:
-                - [B, C, H, W] 特征图
-                - [B, r, C] 特征序列 (r = H*W)
-        输出:
-            [B, 3, output_size, output_size] 恢复的图像
-        """
-        # 处理输入格式
-        if len(x.shape) == 3:  # [B, r, C]
-            B, r, C = x.shape
-            # 恢复到 [B, C, H, W]
-            x = x.transpose(1, 2).view(B, C, self.H, self.W)
-        elif len(x.shape) == 2:  # [B, C*H*W]
-            B, _ = x.shape
-            x = x.view(B, self.C, self.H, self.W)
-
-        # 解码过程
-        x = self.reshape_conv(x)
-
-        # 动态上采样到目标尺寸
-        current_h, current_w = x.shape[2], x.shape[3]
-
-        # 如果当前尺寸小于14，先插值到14
-        if current_h < 14:
-            x = F.interpolate(x, size=(14, 14), mode='bilinear', align_corners=False)
-
-        x = self.upsample1(x)  # -> 14x14 或更大
-        x = self.upsample2(x)  # -> 28x28
-        x = self.upsample3(x)  # -> 56x56
-        x = self.upsample4(x)  # -> 112x112 (略大于84)
-
-        # 裁剪到84x84
-        x = self.crop(x)
-
-        # 输出图像
-        x = torch.tanh(self.output_conv(x))  # 范围[-1,1]
-
-        return x
-
-
-# ===================== 5. 分类器模块（保持不变） =====================
+# ===================== 4. 分类器模块（保持不变） =====================
 class Classifier_cosine(nn.Module):
     def __init__(self, n_way, n_support, feat_dim):
         super(Classifier_cosine, self).__init__()
@@ -554,7 +432,7 @@ class Classifier_cosine(nn.Module):
         return cosine
 
 
-# ===================== 6. 关系网络模块（保持不变） =====================
+# ===================== 5. 关系网络模块 =====================
 class RelationConvBlock(nn.Module):
     def __init__(self, indim, outdim, padding=0, use_pool=True, pool_type='max'):
         super(RelationConvBlock, self).__init__()
@@ -643,7 +521,7 @@ class RelationModule(nn.Module):
         return out
 
 
-# ===================== 7. 改进的OurNet主类（集成论文Bi-FRN） =====================
+# ===================== 6. 改进的OurNet主类 =====================
 class OurNet(MetaTemplate):
     def __init__(self, model_func, n_way, n_support, loss_type=None,
                  use_fsrm=True,  # 使用特征自重构模块 FSRM
@@ -738,14 +616,8 @@ class OurNet(MetaTemplate):
                 dropout=self.attention_dropout
             )
 
-        # 3. 初始化可视化解码器（如果需要）
-        if self.enable_visualization:
-            self.visualization_decoder = FeatureVisualizationDecoder(
-                feat_dim=self.feat_dim,
-                output_size=84
-            )
-
-        # 4. 移动到设备
+       
+        # 3. 移动到设备
         self.device = next(self.feature.parameters()).device
         self.classifier_cosine = self.classifier_cosine.to(self.device)
         self.relation_module = self.relation_module.to(self.device)
@@ -769,7 +641,7 @@ class OurNet(MetaTemplate):
         print(f"  - 使用FSRM（特征自重构）={self.use_fsrm}")
         print(f"  - 使用FMRM（特征互重构）={self.use_fmrm}")
         print(f"  - 使用ArcFace损失={self.use_arcface} (margin={self.arcface_margin}, scale={self.arcface_scale})")
-        print(f"  - 启用可视化={self.enable_visualization}")
+       
 
     def parameters(self, recurse=True):
         """重写parameters方法，包含所有子模块参数"""
@@ -833,14 +705,6 @@ class OurNet(MetaTemplate):
         return z_support, z_query
 
     def set_forward(self, x, is_feature=False, return_reconstruction=False):
-        """
-        前向传播过程（实现论文的Bi-FRN）
-
-        Args:
-            x: 输入数据
-            is_feature: 是否已经是特征
-            return_reconstruction: 是否返回重构特征（用于可视化）
-        """
         # 1. 特征提取
         z_support, z_query = self.parse_feature(x, is_feature)
         z_support_save = z_support.clone()
@@ -856,7 +720,7 @@ class OurNet(MetaTemplate):
         # [n_way, n_query, C, H, W] -> [n_total_query, C, H, W]
         query_flat = z_query.contiguous().view(n_total_query, *self.feat_dim)
 
-        # 3. FSRM: 特征自重构（对应论文图4）
+        # 3. FSRM: 特征自重构
         if self.use_fsrm and self.fsrm is not None:
             # 对支持集进行自重构
             support_fsrm_out = self.fsrm(support_flat)  # [n_way*n_support, r, C]
@@ -876,7 +740,7 @@ class OurNet(MetaTemplate):
             query_fsrm_out = query_flat.flatten(2).transpose(1, 2)  # [n_total_query, r, C]
             query_fsrm_out = query_fsrm_out.view(self.n_way, self.n_query, -1, self.feat_dim[0])
 
-        # 4. FMRM: 特征互重构（对应论文图5和公式4-7）
+        # 4. FMRM: 特征互重构
         if self.use_fmrm and self.fmrm is not None:
             # 展平查询特征用于FMRM
             query_for_fmrm = query_fsrm_out.view(n_total_query, -1, self.feat_dim[0])  # [n_total_query, r, C]
@@ -887,9 +751,7 @@ class OurNet(MetaTemplate):
                 query_for_fmrm  # [n_total_query, r, C]
             )
 
-            # ========== 关键修改：对距离进行缩放 ==========
-            # total_distances 已经在FMRM中除以了feature_dim，范围在0-1左右
-            # 进一步缩放使logits在合理范围（-5到5）
+           
             scaled_distances = total_distances * self.distance_scale * 5
             final_scores = -scaled_distances  # 距离越小，相似度越高
         else:
@@ -898,7 +760,7 @@ class OurNet(MetaTemplate):
             reconstructed_query = None
             reconstructed_support = None
 
-        # 5. 计算关系分数（原始方法）
+        # 5. 计算关系分数
         z_proto = support_fsrm_out.mean(dim=1)  # [n_way, r, C]
 
         # 将序列转换回特征图用于关系网络
@@ -963,174 +825,6 @@ class OurNet(MetaTemplate):
             }
         else:
             return final_scores, relations, cosine
-
-    def visualize_reconstruction(self, x, is_feature=False, save_path=None):
-        """
-        可视化重构特征（对应论文图6）
-
-        Args:
-            x: 输入数据
-            is_feature: 是否已经是特征
-            save_path: 保存路径（可选）
-
-        Returns:
-            可视化所需的所有特征
-        """
-        if not self.enable_visualization or self.visualization_decoder is None:
-            print("警告：未启用可视化功能或解码器未初始化")
-            return None
-
-        self.eval()
-        with torch.no_grad():
-            # 前向传播，获取重构特征
-            final_scores, relations, cosine, recon_dict = self.set_forward(
-                x, is_feature=is_feature, return_reconstruction=True
-            )
-
-            # 解码图像
-            # 1. 原始支持特征 -> 图像
-            support_original_imgs = []
-            for i in range(min(5, self.n_way)):  # 最多显示5个类
-                for j in range(min(5, self.n_support)):  # 最多显示5个支持样本
-                    img = self.visualization_decoder(recon_dict['support_flat'][i * self.n_support + j])
-                    support_original_imgs.append(img)
-
-            # 2. 原始查询特征 -> 图像
-            query_original_imgs = []
-            for i in range(min(5, recon_dict['query_flat'].shape[0])):
-                img = self.visualization_decoder(recon_dict['query_flat'][i])
-                query_original_imgs.append(img)
-
-            # 3. 重构的支持特征 Ŝ_(i,c) -> 图像
-            reconstructed_support_imgs = {}
-            if recon_dict['reconstructed_support'] is not None:
-                # reconstructed_support: [n_way, n_total_query, n_support, r, C]
-                for c in range(min(5, self.n_way)):
-                    for i in range(min(5, recon_dict['reconstructed_support'].shape[1])):
-                        for k in range(min(5, self.n_support)):
-                            feat = recon_dict['reconstructed_support'][c, i, k]  # [r, C]
-                            img = self.visualization_decoder(feat)
-                            reconstructed_support_imgs[f'c{c}_q{i}_k{k}'] = img
-
-            # 4. 重构的查询特征 Q̂_(c,i) -> 图像
-            reconstructed_query_imgs = {}
-            if recon_dict['reconstructed_query'] is not None:
-                # reconstructed_query: [n_way, n_total_query, r, C]
-                for c in range(min(5, self.n_way)):
-                    for i in range(min(5, recon_dict['reconstructed_query'].shape[1])):
-                        feat = recon_dict['reconstructed_query'][c, i]  # [r, C]
-                        img = self.visualization_decoder(feat)
-                        reconstructed_query_imgs[f'c{c}_q{i}'] = img
-
-            # 返回所有可视化所需的数据
-            visualization_data = {
-                'support_original_imgs': support_original_imgs,
-                'query_original_imgs': query_original_imgs,
-                'reconstructed_support_imgs': reconstructed_support_imgs,
-                'reconstructed_query_imgs': reconstructed_query_imgs,
-                'distances_q2s': recon_dict['distances_q2s'],
-                'distances_s2q': recon_dict['distances_s2q'],
-                'final_scores': final_scores
-            }
-
-            # 如果需要保存图像
-            if save_path:
-                self._save_visualization(visualization_data, save_path)
-
-            return visualization_data
-
-    def _save_visualization(self, vis_data, save_path):
-        """保存可视化图像（图6格式）"""
-        try:
-            import matplotlib.pyplot as plt
-            import matplotlib.gridspec as gridspec
-        except ImportError:
-            print("请安装matplotlib以保存可视化图像")
-            return
-
-        # 创建图形（类似论文图6的布局）
-        n_classes = min(5, self.n_way)
-        n_support = min(5, self.n_support)
-        n_queries = min(5, len(vis_data['query_original_imgs']))
-
-        # 图6布局：
-        # 第1列：支持集原始图像
-        # 第2列：S_c^V 恢复图像
-        # 第3列：Ŝ_(i,c) 恢复图像
-        # 第4列：Q̂_(c,i) 恢复图像
-        # 第5列：Q_i^V 恢复图像
-
-        fig = plt.figure(figsize=(20, 4 * n_classes))
-        gs = gridspec.GridSpec(n_classes, 5, figure=fig, wspace=0.1, hspace=0.1)
-
-        for c in range(n_classes):
-            # 第1列：支持集原始图像
-            ax = fig.add_subplot(gs[c, 0])
-            if c * n_support < len(vis_data['support_original_imgs']):
-                img = vis_data['support_original_imgs'][c * n_support]
-                img = (img.cpu().numpy().transpose(1, 2, 0) + 1) / 2  # 反归一化
-                ax.imshow(np.clip(img, 0, 1))
-            ax.set_xticks([])
-            ax.set_yticks([])
-            if c == 0:
-                ax.set_title(f'Support Original', fontsize=10)
-
-            # 第2列：S_c^V 恢复图像（支持特征）
-            ax = fig.add_subplot(gs[c, 1])
-            # 使用支持特征恢复图像
-            support_feat_key = f'support_original_{c}'
-            # 简化：使用第一个支持样本
-            img = vis_data['support_original_imgs'][c * n_support]
-            img = (img.cpu().numpy().transpose(1, 2, 0) + 1) / 2
-            ax.imshow(np.clip(img, 0, 1))
-            ax.set_xticks([])
-            ax.set_yticks([])
-            if c == 0:
-                ax.set_title(r'$S_c^V$', fontsize=12)
-
-            # 第3列：Ŝ_(i,c) 恢复图像（重构的支持特征）
-            ax = fig.add_subplot(gs[c, 2])
-            # 使用第一个查询和第一个支持样本
-            key = f'c{c}_q0_k0'
-            if key in vis_data['reconstructed_support_imgs']:
-                img = vis_data['reconstructed_support_imgs'][key]
-                img = (img.cpu().numpy().transpose(1, 2, 0) + 1) / 2
-                ax.imshow(np.clip(img, 0, 1))
-            ax.set_xticks([])
-            ax.set_yticks([])
-            if c == 0:
-                ax.set_title(r'$\hat{S}_{(i,c)}$', fontsize=12)
-
-            # 第4列：Q̂_(c,i) 恢复图像（重构的查询特征）
-            ax = fig.add_subplot(gs[c, 3])
-            key = f'c{c}_q0'
-            if key in vis_data['reconstructed_query_imgs']:
-                img = vis_data['reconstructed_query_imgs'][key]
-                img = (img.cpu().numpy().transpose(1, 2, 0) + 1) / 2
-                ax.imshow(np.clip(img, 0, 1))
-            ax.set_xticks([])
-            ax.set_yticks([])
-            if c == 0:
-                ax.set_title(r'$\hat{Q}_{(c,i)}$', fontsize=12)
-
-            # 第5列：Q_i^V 恢复图像（查询特征）
-            ax = fig.add_subplot(gs[c, 4])
-            if c < n_queries:
-                img = vis_data['query_original_imgs'][c]
-                img = (img.cpu().numpy().transpose(1, 2, 0) + 1) / 2
-                ax.imshow(np.clip(img, 0, 1))
-            ax.set_xticks([])
-            ax.set_yticks([])
-            if c == 0:
-                ax.set_title(r'$Q_i^V$', fontsize=12)
-
-        plt.suptitle('Feature Reconstruction Visualization (Fig.6)', fontsize=14)
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        plt.close()
-
-        print(f"可视化图像已保存到: {save_path}")
-
     def correct(self, x):
         """重写correct方法"""
         scores, _, _ = self.set_forward(x)
@@ -1310,14 +1004,6 @@ def visualize_reconstruction_example(model, test_loader, save_path='reconstructi
             print(f"距离矩阵 d_Q_i→S_c 形状: {vis_data['distances_q2s'].shape}")
             print(f"距离矩阵 d_S_c→Q_i 形状: {vis_data['distances_s2q'].shape}")
         break
-
-
-if __name__ == "__main__":
-    print("Bi-FRN (Bidirectional Feature Reconstruction Network) 模块加载成功！")
-    print("可用组件:")
-    print("1. FeatureSelfReconstructionModule (FSRM) - 特征自重构模块（图4）")
-    print("2. FeatureMutualReconstructionModule (FMRM) - 特征互重构模块（图5）")
-    print("3. FeatureVisualizationDecoder - 可视化解码器（用于生成图6）")
     print("4. ArcFaceLoss - 适配小样本的ArcFace损失")
     print("5. OurNet - 主网络类（完整实现Bi-FRN）")
     print("\n主要改进:")
